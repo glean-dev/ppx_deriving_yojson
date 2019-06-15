@@ -1,6 +1,6 @@
 #if OCAML_VERSION >= (4, 06, 0)
-#define Rtag(label, attrs, has_empty, args) \
-        Rtag({ txt = label }, attrs, has_empty, args)
+#define Rtag(label, has_empty, args) \
+        Rtag({ txt = label }, has_empty, args)
 #endif
 
 open Longident
@@ -100,16 +100,18 @@ let rec ser_expr_of_typ typ =
   | { ptyp_desc = Ptyp_variant (fields, _, _); ptyp_loc } ->
     let cases =
       fields |> List.map (fun field ->
-        match field with
-        | Rtag(label, attrs, true (*empty*), []) ->
+        let attrs = field.prf_attributes in
+        match field.prf_desc with
+          | Rtag(label, true (*empty*), []) ->
+
           Exp.case (Pat.variant label None)
                    [%expr `List [`String [%e str (attr_name label attrs)]]]
-        | Rtag(label, attrs, false, [{ ptyp_desc = Ptyp_tuple typs }]) ->
+        | Rtag(label, false, [{ ptyp_desc = Ptyp_tuple typs }]) ->
           Exp.case (Pat.variant label (Some (ptuple (List.mapi (fun i _ -> pvar (argn i)) typs))))
                    [%expr `List ((`String [%e str (attr_name label attrs)]) :: [%e
                       list (List.mapi
                         (fun i typ -> app (ser_expr_of_typ typ) [evar (argn i)]) typs)])]
-        | Rtag(label, attrs, false, [typ]) ->
+        | Rtag(label, false, [typ]) ->
           Exp.case (Pat.variant label (Some [%pat? x]))
                    [%expr `List [`String [%e str (attr_name label attrs)];
                                  [%e ser_expr_of_typ typ] x]]
@@ -192,17 +194,18 @@ and desu_expr_of_typ ~path typ =
     decode [%pat? `List [%p plist (List.mapi (fun i _ -> pvar (argn i)) typs)]]
            (desu_fold ~path tuple typs)
   | { ptyp_desc = Ptyp_variant (fields, _, _); ptyp_loc } ->
-    let inherits, tags = List.partition (function Rinherit _ -> true | _ -> false) fields in
+    let inherits, tags = List.partition (function { prf_desc= Rinherit _; _ } -> true | _ -> false) fields in
     let tag_cases = tags |> List.map (fun field ->
-      match field with
-      | Rtag(label, attrs, true (*empty*), []) ->
+      let attrs = field.prf_attributes in
+      match field.prf_desc with
+        | Rtag(label, true (*empty*), []) ->
         Exp.case [%pat? `List [`String [%p pstr (attr_name label attrs)]]]
                  [%expr Result.Ok [%e Exp.variant label None]]
-      | Rtag(label, attrs, false, [{ ptyp_desc = Ptyp_tuple typs }]) ->
+      | Rtag(label, false, [{ ptyp_desc = Ptyp_tuple typs }]) ->
         Exp.case [%pat? `List ((`String [%p pstr (attr_name label attrs)]) :: [%p
                     plist (List.mapi (fun i _ -> pvar (argn i)) typs)])]
                  (desu_fold ~path (fun x -> (Exp.variant label (Some (tuple x)))) typs)
-      | Rtag(label, attrs, false, [typ]) ->
+      | Rtag(label, false, [typ]) ->
         Exp.case [%pat? `List [`String [%p pstr (attr_name label attrs)]; x]]
                  [%expr [%e desu_expr_of_typ ~path typ] x >>= fun x ->
                         Result.Ok [%e Exp.variant label (Some [%expr x])]]
@@ -215,7 +218,7 @@ and desu_expr_of_typ ~path typ =
     and inherits_case =
       let toplevel_typ = typ in
       inherits
-      |> List.map (function Rinherit typ -> typ | _ -> assert false)
+      |> List.map (function { prf_desc= Rinherit typ; _ } -> typ | _ -> assert false)
       |> List.fold_left (fun expr typ -> [%expr
         match [%e desu_expr_of_typ ~path typ] json with
         | (Result.Ok result) -> Result.Ok (result :> [%t toplevel_typ])
@@ -363,8 +366,9 @@ let ser_str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
     let poly_type = Typ.force_poly @@ Typ.poly fv @@ ty in
     let var_s = Ppx_deriving.mangle_type_decl (`Suffix "to_yojson") type_decl in
     let var = pvar var_s in
+    let no_warn_39 = Ppx_deriving.attr_warning [%expr "-39"] in
     ([],
-     [Vb.mk ~attrs:[mkloc "ocaml.warning" !Ast_helper.default_loc, PStr [%str "-39"]]
+     [Vb.mk ~attrs:[no_warn_39]
         (Pat.constraint_ var poly_type)
         (polymorphize [%expr ([%e wrap_runtime serializer])])],
      [Str.value Nonrecursive [Vb.mk [%expr [%e pvar "_"]] [%expr [%e evar var_s]]] ]
@@ -574,8 +578,9 @@ let desu_str_of_type ~options ~path ({ ptype_loc = loc } as type_decl) =
       in
       loop ((List.mapi (fun i _ -> argn i) ptype_params) @ ["x"])
     in
+    let no_warn_39 = Ppx_deriving.attr_warning [%expr "-39"] in
     ([],
-     [Vb.mk ~attrs:[mkloc "ocaml.warning" !Ast_helper.default_loc, PStr [%str "-39"]]
+     [Vb.mk ~attrs:[no_warn_39]
             (Pat.constraint_ var poly_type)
             (polymorphize [%expr ([%e wrap_runtime desurializer])]) ],
      [Str.value Nonrecursive [Vb.mk [%expr [%e pvar "_"]] [%expr [%e evar var_s]]]]
